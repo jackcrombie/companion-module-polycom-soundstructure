@@ -1,9 +1,9 @@
 {
-	"id": "polycom-soundstructure",
+	"id": "polycom-soundstructure-dsp",
 	"name": "Polycom Sound Structure",
-	"shortname": "polycom-soundstructure",
+	"shortname": "soundstructure",
 	"description": "Control your Polycom SoundStructure DSPs",
-	"version": "0.0.1",
+	"version": "0.1.0",
 	"license": "MIT",
 	"repository": "git+https://github.com/bitfocus/companion-module-your-module-name.git",
 	"bugs": "https://github.com/bitfocus/companion-module-your-module-name/issues",
