@@ -5,8 +5,8 @@
 	"description": "Control your Polycom SoundStructure DSPs",
 	"version": "0.1.0",
 	"license": "MIT",
-	"repository": "git+https://github.com/bitfocus/companion-module-your-module-name.git",
-	"bugs": "https://github.com/bitfocus/companion-module-your-module-name/issues",
+	"repository": "git+https://github.com/jackcrombie/companion-module-polycom-soundstructure.git",
+	"bugs": "https://github.com/jackcrombie/companion-module-polycom-soundstructure/issues",
 	"maintainers": [
 		{
 			"name": "Jack Crombie",
@@ -14,7 +14,7 @@
 		}
 	],
 	"runtime": {
-		"type": "node22",
+		"type": "node18",
 		"api": "nodejs-ipc",
 		"apiVersion": "0.0.0",
 		"entrypoint": "../main.js"

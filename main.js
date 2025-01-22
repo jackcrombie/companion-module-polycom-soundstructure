@@ -13,142 +13,129 @@ class ModuleInstance extends InstanceBase {
 		this.presets = []
 		this.channelMuteStatus = {}
 		this.crosspointMuteStatus = {}
+		this.filterStatus = {}
+		this.buffer = ''
 	}
 
-	// Initialize the module with the given config
 	async init(config) {
 		this.config = config
-
-		this.updateStatus(InstanceStatus.Ok)  // Mark status as OK
-		this.connectToDevice()  // Establish TCP connection to the SoundStructure
-
-		this.updateActions()  // Load dynamic actions
-		this.updateFeedbacks()  // Set up feedbacks
-		this.updateVariableDefinitions()  // Define any module variables
+		this.updateStatus(InstanceStatus.Ok)
+		this.connectToDevice()
+		this.updateActions()
+		this.updateFeedbacks()
+		this.updateVariableDefinitions()
 	}
 
-	// Handle module destroy/cleanup
 	async destroy() {
 		if (this.socket) {
 			this.socket.destroy()
 			this.socket = null
 		}
-		this.log('debug', 'Module instance destroyed')
 	}
 
-	// Handle updated configuration
 	async configUpdated(config) {
 		this.config = config
-		this.connectToDevice()  // Reconnect to the device with updated config
+		this.connectToDevice()
 	}
 
-	// Define configuration fields for the web UI
 	getConfigFields() {
 		return [
 			{
 				type: 'textinput',
 				id: 'host',
-				label: 'Target IP Address',
+				label: 'SoundStructure IP',
 				width: 8,
 				regex: Regex.IP,
 			},
 			{
 				type: 'textinput',
 				id: 'port',
-				label: 'Target Port',
+				label: 'Port',
 				width: 4,
-				default: '23',
+				default: '52774',
 				regex: Regex.PORT,
 			},
 		]
 	}
 
-	// Handle actions export
 	updateActions() {
-		UpdateActions(this)  // Load dynamic actions from actions.js
+		UpdateActions(this)
 	}
 
-	// Handle feedbacks export
 	updateFeedbacks() {
-		UpdateFeedbacks(this)  // Load dynamic feedbacks from feedbacks.js
+		UpdateFeedbacks(this)
 	}
 
-	// Handle variable definitions export
 	updateVariableDefinitions() {
-		UpdateVariableDefinitions(this)  // Load dynamic variables from variables.js
+		UpdateVariableDefinitions(this)
 	}
 
-	// Function to establish a TCP connection
 	connectToDevice() {
 		if (this.socket) {
 			this.socket.destroy()
 			this.socket = null
 		}
 
-		// Use TCPHelper to simplify TCP connection management
 		if (this.config.host && this.config.port) {
 			this.socket = new TCPHelper(this.config.host, this.config.port)
 
 			this.socket.on('connect', () => {
 				this.updateStatus(InstanceStatus.Ok)
 				this.log('info', `Connected to SoundStructure at ${this.config.host}:${this.config.port}`)
-				this.requestDeviceConfiguration()  // Query the device for virtual channels and presets
+				this.queryState()
 			})
 
 			this.socket.on('data', (data) => {
-				this.processDeviceData(data.toString())
+				this.buffer += data.toString()
+				let newlineIndex
+				while ((newlineIndex = this.buffer.indexOf('\r\n')) !== -1) {
+					const line = this.buffer.substring(0, newlineIndex)
+					this.processDeviceData(line)
+					this.buffer = this.buffer.substring(newlineIndex + 2)
+				}
 			})
 
 			this.socket.on('error', (err) => {
 				this.updateStatus(InstanceStatus.Error, err.message)
 				this.log('error', `Connection error: ${err.message}`)
 			})
-
-			this.socket.on('close', () => {
-				this.updateStatus(InstanceStatus.Disconnected, 'Connection closed')
-				this.log('warn', 'Connection closed')
-			})
 		}
 	}
 
-	// Request virtual channels and presets from the device
-	requestDeviceConfiguration() {
+	queryState() {
+		// Query initial states
 		this.sendCommand('get virtual_channels')
 		this.sendCommand('get presets')
+		this.sendCommand('get mute "*"')
+		this.sendCommand('get matrix_mute "*" "*"')
+		this.sendCommand('get hpf_en "*"')
+		this.sendCommand('get lpf_en "*"')
 	}
 
-	// Handle processing of incoming data from the device
 	processDeviceData(data) {
 		this.log('debug', `Data received: ${data}`)
-		if (data.startsWith('virtual_channels=')) {
-			this.virtualChannels = data.substring('virtual_channels='.length).split(',').map((v) => v.trim())
-			this.updateActions()  // Update actions dynamically based on retrieved virtual channels
-		} else if (data.startsWith('presets=')) {
-			this.presets = data.substring('presets='.length).split(',').map((p) => p.replace(/"/g, '').trim())
-			this.updateActions()  // Update actions with dynamic preset list
-		} else if (data.startsWith('mute ')) {
-			const [info, value] = data.split('=')
-			const match = /mute "(.*)"/.exec(info)
+		
+		// Parse different types of responses
+		if (data.startsWith('val ')) {
+			const match = /val "(.*)" = (.*)/.exec(data)
 			if (match) {
-				const channel = match[1]
-				this.channelMuteStatus[channel] = parseInt(value, 10)
-				this.checkFeedbacks('channelMuteStatus')  // Update mute feedbacks
-			}
-		} else if (data.startsWith('crosspoint_mute ')) {
-			const [info, value] = data.split('=')
-			const regex = /crosspoint_mute "(.*)" "(.*)"/
-			const match = regex.exec(info)
-			if (match) {
-				const input = match[1]
-				const output = match[2]
-				const key = `${input}:${output}`
-				this.crosspointMuteStatus[key] = parseInt(value, 10)
-				this.checkFeedbacks('crosspointMuteStatus')  // Update crosspoint mute feedbacks
+				const [, param, value] = match
+				if (param.endsWith('_mute')) {
+					this.channelMuteStatus[param] = parseInt(value, 10)
+					this.checkFeedbacks('channelMuteStatus')
+				} else if (param.includes('matrix_mute')) {
+					const [input, output] = param.split(' to ')
+					const key = `${input}:${output}`
+					this.crosspointMuteStatus[key] = parseInt(value, 10)
+					this.checkFeedbacks('crosspointMuteStatus')
+				} else if (param.endsWith('_en')) {
+					this.filterStatus[param] = parseInt(value, 10)
+					this.checkFeedbacks('filterStatus')
+				}
 			}
 		}
 	}
 
-	// Send command to the SoundStructure device
 	sendCommand(cmd) {
 		if (this.socket && this.socket.isConnected) {
 			this.socket.send(`${cmd}\r\n`)
@@ -159,5 +146,4 @@ class ModuleInstance extends InstanceBase {
 	}
 }
 
-// Run the module using the entry point provided by Bitfocus Companion
 runEntrypoint(ModuleInstance, UpgradeScripts)
