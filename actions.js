@@ -37,12 +37,12 @@ module.exports = function (self) {
 								return self.channels.groups.map(ch => ({ id: ch, label: ch }))
 							default:
 								return [
-									...self.channels.virtual,
-									...self.channels.inputs,
-									...self.channels.outputs,
-									...self.channels.mics,
-									...self.channels.groups
-								].map(ch => ({ id: ch, label: ch }))
+									...self.channels.virtual.map(ch => ({ id: ch, label: ch })),
+									...self.channels.inputs.map(ch => ({ id: ch, label: ch })),
+									...self.channels.outputs.map(ch => ({ id: ch, label: ch })),
+									...self.channels.mics.map(ch => ({ id: ch, label: ch })),
+									...self.channels.groups.map(ch => ({ id: ch, label: ch }))
+								]
 						}
 					},
 					default: ''
@@ -55,7 +55,7 @@ module.exports = function (self) {
 				}
 			],
 			callback: async (event) => {
-				self.sendCommand(`set mute "${event.options.channel}" ${event.options.mute ? '1' : '0'}`)
+				self.sendCommand(`set matrix_mute "${event.options.channel}" ${event.options.mute ? '1' : '0'}`)
 			}
 		},
 
@@ -120,6 +120,43 @@ module.exports = function (self) {
 									.map(ch => ({ id: ch, label: ch }))
 						}
 					},
+					default: ''
+				},
+				{
+					type: 'checkbox',
+					label: 'Mute',
+					id: 'mute',
+					default: true
+				}
+			],
+			callback: async (event) => {
+				self.sendCommand(`set matrix_mute "${event.options.input}" "${event.options.output}" ${event.options.mute ? '1' : '0'}`)
+			}
+		}
+	})
+
+	self.setActions({
+		'matrix_mute': {
+			name: 'Set Matrix Mute',
+			options: [
+				{
+					type: 'dropdown',
+					label: 'Input Channel',
+					id: 'input',
+					choices: self.enumeratedChannels.map(channel => ({
+						id: channel.label,
+						label: `${channel.label} (${channel.vctype})`
+					})),
+					default: ''
+				},
+				{
+					type: 'dropdown',
+					label: 'Output Channel',
+					id: 'output',
+					choices: self.enumeratedChannels.map(channel => ({
+						id: channel.label,
+						label: `${channel.label} (${channel.vctype})`
+					})),
 					default: ''
 				},
 				{
