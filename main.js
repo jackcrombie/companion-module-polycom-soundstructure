@@ -249,6 +249,12 @@ class ModuleInstance extends InstanceBase {
         })
 
         this.log('info', `Enumerated channels: ${JSON.stringify(this.enumeratedChannels, null, 2)}`)
+
+        // Update the channels object
+        this.channels.virtual = this.enumeratedChannels.map(ch => ch.label)
+
+        // Refresh actions to include the new channels
+        this.updateActions()
     }
 
     checkDiscoveryComplete() {
