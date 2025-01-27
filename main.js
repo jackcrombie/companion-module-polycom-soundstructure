@@ -326,6 +326,7 @@ class ModuleInstance extends InstanceBase {
 }
 
 // Example usage
-enumerateChannels()
+const instance = new ModuleInstance()
+instance.enumerateChannels()
 
 runEntrypoint(ModuleInstance, UpgradeScripts)
