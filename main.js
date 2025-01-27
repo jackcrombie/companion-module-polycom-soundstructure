@@ -22,7 +22,7 @@ class ModuleInstance extends InstanceBase {
 		// Discovery related properties
 		this.channels = {
 			virtual: [],
-			inputs: [],
+			inputs: [], 
 			outputs: [],
 			mics: [],
 			groups: []
@@ -122,7 +122,6 @@ class ModuleInstance extends InstanceBase {
 		}
 	}
 
-	// Discovery Methods
 	async discoverChannels() {
 		if (this.discoveryInProgress) {
 			this.log('debug', 'Discovery already in progress')
@@ -130,9 +129,11 @@ class ModuleInstance extends InstanceBase {
 		}
 
 		this.discoveryInProgress = true
+		this.log('debug', '=== Starting Channel Discovery ===')
+
 		this.channels = {
 			virtual: [],
-			inputs: [],
+			inputs: [], 
 			outputs: [],
 			mics: [],
 			groups: []
@@ -143,28 +144,97 @@ class ModuleInstance extends InstanceBase {
 		this.discoveryTimeout = setTimeout(() => {
 			if (this.discoveryInProgress) {
 				this.discoveryInProgress = false
-				this.log('warn', 'Channel discovery timed out')
-				this.updateStatus(InstanceStatus.Ok, 'Discovery timed out')
+				this.log('warn', 'Channel discovery timed out. Current state:', JSON.stringify(this.channels))
+				this.log('debug', '=== Discovery Timed Out ===')
+				this.finalizeDiscovery()
 			}
-		}, 10000) // 10 second timeout
+		}, 30000) // 30 second timeout
 
-		// Send discovery commands
-		this.sendCommand('get virtual_channels')
-		this.sendCommand('get line_inputs')
-		this.sendCommand('get line_outputs')
-		this.sendCommand('get mic_inputs')
-		this.sendCommand('get groups')
+		// Query commands with delays
+		setTimeout(() => {
+			this.log('debug', 'Querying system info')
+			this.sendCommand('get channels')
+		}, 1000)
+
+		setTimeout(() => {
+			this.log('debug', 'Querying virtual channels')
+			this.sendCommand('get virtual_channels')
+		}, 2000)
+	}
+
+	processDeviceData(data) {
+		this.log('debug', `Raw data received: ${data}`)
+
+		// Handle discovery responses
+		if (this.discoveryInProgress) {
+			this.log('debug', `Processing discovery data: ${data}`)
+
+			// Check for virtual channels response
+			if (data.substring(0,18) === 'val virtual_channels') {
+				const match = /val virtual_channels "(.+)"/.exec(data)
+				if (match) {
+					this.channels.virtual = match[1].split(',').map(c => c.trim())
+					this.log('debug', 'Found virtual channels:', this.channels.virtual)
+				}
+			}
+			
+			// Check for channels response
+			if (data.substring(0,11) === 'val channels') {
+				const match = /val channels "(.+)"/.exec(data)
+				if (match) {
+					const channels = match[1].split(',').map(c => c.trim())
+					this.log('debug', 'Found channels:', channels)
+					
+					// Sort channels into types
+					channels.forEach(channel => {
+						if (channel.toLowerCase().indexOf('mic') !== -1) {
+							this.channels.mics.push(channel)
+						} else {
+							this.channels.inputs.push(channel)
+						}
+					})
+				}
+			}
+
+			// Check if discovery is complete
+			if (this.checkDiscoveryComplete()) {
+				this.finalizeDiscovery()
+				this.log('debug', '=== Discovery Complete ===')
+				this.log('debug', 'Final channel state:', JSON.stringify(this.channels, null, 2))
+			}
+		}
+
+		// Process all val responses
+		if (data.substring(0,4) === 'val ') {
+			const match = /val "(.*)" = (.*)/.exec(data)
+			if (match) {
+				const param = match[1]
+				const value = match[2]
+
+				// Check parameter type
+				if (param.indexOf('_mute') !== -1) {
+					this.channelMuteStatus[param] = parseInt(value, 10)
+					this.checkFeedbacks('channelMuteStatus')
+				} else if (param.indexOf('matrix_mute') !== -1) {
+					const [input, output] = param.split(' to ')
+					const key = `${input}:${output}`
+					this.crosspointMuteStatus[key] = parseInt(value, 10)
+					this.checkFeedbacks('crosspointMuteStatus')
+				} else if (param.indexOf('_en') !== -1) {
+					this.filterStatus[param] = parseInt(value, 10)
+					this.checkFeedbacks('filterStatus')
+				}
+			}
+		}
 	}
 
 	parseChannelList(data) {
-		// Remove any surrounding quotes and split by comma
 		return data.split(',')
 			.map(channel => channel.trim().replace(/^"(.*)"$/, '$1'))
 			.filter(channel => channel.length > 0)
 	}
 
 	checkDiscoveryComplete() {
-		// Check if we've received at least some channels
 		return (
 			this.channels.virtual.length > 0 ||
 			this.channels.inputs.length > 0 ||
@@ -197,63 +267,28 @@ class ModuleInstance extends InstanceBase {
 		})
 	}
 
-	processDeviceData(data) {
-		this.log('debug', `Data received: ${data}`)
-
-		// Handle discovery responses
-		if (this.discoveryInProgress) {
-			if (data.startsWith('virtual_channels=')) {
-				this.channels.virtual = this.parseChannelList(data.substring('virtual_channels='.length))
-				this.channels.virtual.forEach(channel => this.channelTypes[channel] = 'virtual')
-			}
-			else if (data.startsWith('line_inputs=')) {
-				this.channels.inputs = this.parseChannelList(data.substring('line_inputs='.length))
-				this.channels.inputs.forEach(channel => this.channelTypes[channel] = 'input')
-			}
-			else if (data.startsWith('line_outputs=')) {
-				this.channels.outputs = this.parseChannelList(data.substring('line_outputs='.length))
-				this.channels.outputs.forEach(channel => this.channelTypes[channel] = 'output')
-			}
-			else if (data.startsWith('mic_inputs=')) {
-				this.channels.mics = this.parseChannelList(data.substring('mic_inputs='.length))
-				this.channels.mics.forEach(channel => this.channelTypes[channel] = 'mic')
-			}
-			else if (data.startsWith('groups=')) {
-				this.channels.groups = this.parseChannelList(data.substring('groups='.length))
-				this.channels.groups.forEach(channel => this.channelTypes[channel] = 'group')
-			}
-
-			// Check if discovery is complete
-			if (this.checkDiscoveryComplete()) {
-				this.finalizeDiscovery()
-			}
-		}
-
-		// Handle state responses
-		if (data.startsWith('val ')) {
-			const match = /val "(.*)" = (.*)/.exec(data)
-			if (match) {
-				const [, param, value] = match
-				if (param.endsWith('_mute')) {
-					this.channelMuteStatus[param] = parseInt(value, 10)
-					this.checkFeedbacks('channelMuteStatus')
-				} else if (param.includes('matrix_mute')) {
-					const [input, output] = param.split(' to ')
-					const key = `${input}:${output}`
-					this.crosspointMuteStatus[key] = parseInt(value, 10)
-					this.checkFeedbacks('crosspointMuteStatus')
-				} else if (param.endsWith('_en')) {
-					this.filterStatus[param] = parseInt(value, 10)
-					this.checkFeedbacks('filterStatus')
-				}
-			}
-		}
-	}
-
 	sendCommand(cmd) {
 		if (this.socket && this.socket.isConnected) {
+			this.log('debug', `Sending command: ${cmd}`)
 			this.socket.send(`${cmd}\r\n`)
 			this.log('debug', `Command sent: ${cmd}`)
+
+			// Set a timeout to handle cases where no response is received
+			const timeout = setTimeout(() => {
+				this.log('error', `Command timed out: ${cmd}`)
+			}, 5000) // 5 seconds timeout
+
+			this.socket.on('data', (data) => {
+				clearTimeout(timeout)
+				this.log('debug', `Response received: ${data}`)
+
+				// Check for specific error messages
+				if (data.includes('error')) {
+					this.log('error', `Error response: ${data}`)
+				} else {
+					// Handle the response data here
+				}
+			})
 		} else {
 			this.log('error', 'Socket not connected')
 		}
