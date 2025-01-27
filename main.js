@@ -30,6 +30,7 @@ class ModuleInstance extends InstanceBase {
         this.channelTypes = {} // Maps channel names to their types
         this.discoveryInProgress = false
         this.discoveryTimeout = null
+        this.enumeratedChannels = [] // Accumulate channels here
     }
 
     async init(config) {
@@ -233,8 +234,21 @@ class ModuleInstance extends InstanceBase {
         // Convert data to string if it's not already
         const dataStr = data.toString()
         const channels = dataStr.split('\n').map(line => line.trim()).filter(line => line.startsWith('vcitem'))
-        this.log('info', `Enumerated channels: ${channels.join(', ')}`)
-        // Store or use the channels as needed
+
+        // Parse each vcitem line
+        channels.forEach(channel => {
+            const match = /vcitem "([^"]+)" (\w+) (\w+) ([\d\s]+)/.exec(channel)
+            if (match) {
+                const label = match[1]
+                const vctype = match[2]
+                const pctype = match[3]
+                const nums = match[4].split(' ').map(num => parseInt(num, 10))
+
+                this.enumeratedChannels.push({ label, vctype, pctype, nums })
+            }
+        })
+
+        this.log('info', `Enumerated channels: ${JSON.stringify(this.enumeratedChannels, null, 2)}`)
     }
 
     checkDiscoveryComplete() {
