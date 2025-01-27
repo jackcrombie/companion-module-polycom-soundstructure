@@ -1,191 +1,137 @@
-const { combineRgb } = require('@companion-module/base')
-
 module.exports = function (self) {
 	self.setActionDefinitions({
-		// Volume Controls
-		increment_volume: {
-			name: 'Increment Channel Volume',
-			options: [
-				{
-					type: 'textinput',
-					label: 'Channel Name',
-					id: 'channel',
-					default: 'Speakers',
-				},
-				{
-					type: 'number',
-					label: 'Amount (dB)',
-					id: 'amount',
-					default: 1,
-					min: 0,
-					max: 10,
-				},
-			],
-			callback: async (event) => {
-				self.sendCommand(`inc fader "${event.options.channel}" ${event.options.amount}`)
-			},
-		},
-		decrement_volume: {
-			name: 'Decrement Channel Volume',
-			options: [
-				{
-					type: 'textinput',
-					label: 'Channel Name',
-					id: 'channel',
-					default: 'Speakers',
-				},
-				{
-					type: 'number',
-					label: 'Amount (dB)',
-					id: 'amount',
-					default: 1,
-					min: 0,
-					max: 10,
-				},
-			],
-			callback: async (event) => {
-				self.sendCommand(`dec fader "${event.options.channel}" ${event.options.amount}`)
-			},
-		},
-		
-		// Line Out Gain Controls
-		set_line_out_gain: {
-			name: 'Set Line Out Gain',
-			options: [
-				{
-					type: 'textinput',
-					label: 'Channel Name',
-					id: 'channel',
-					default: 'Genelecs',
-				},
-				{
-					type: 'number',
-					label: 'Gain (dB)',
-					id: 'gain',
-					default: -24,
-					min: -100,
-					max: 20,
-				},
-			],
-			callback: async (event) => {
-				self.sendCommand(`set line_out_gain "${event.options.channel}" ${event.options.gain}`)
-			},
-		},
-
-		// Mute Controls
 		set_mute: {
 			name: 'Set Channel Mute',
 			options: [
 				{
-					type: 'textinput',
-					label: 'Channel Name',
+					type: 'dropdown',
+					label: 'Channel Type',
+					id: 'channelType',
+					choices: [
+						{ id: 'all', label: 'All Channels' },
+						{ id: 'virtual', label: 'Virtual Channels' },
+						{ id: 'inputs', label: 'Line Inputs' },
+						{ id: 'outputs', label: 'Line Outputs' },
+						{ id: 'mics', label: 'Microphones' },
+						{ id: 'groups', label: 'Groups' }
+					],
+					default: 'all'
+				},
+				{
+					type: 'dropdown',
+					label: 'Channel',
 					id: 'channel',
-					default: 'Speakers',
+					choices: (action) => {
+						if (!action || !action.options) return []
+						
+						switch(action.options.channelType) {
+							case 'virtual':
+								return self.channels.virtual.map(ch => ({ id: ch, label: ch }))
+							case 'inputs':
+								return self.channels.inputs.map(ch => ({ id: ch, label: ch }))
+							case 'outputs':
+								return self.channels.outputs.map(ch => ({ id: ch, label: ch }))
+							case 'mics':
+								return self.channels.mics.map(ch => ({ id: ch, label: ch }))
+							case 'groups':
+								return self.channels.groups.map(ch => ({ id: ch, label: ch }))
+							default:
+								return [
+									...self.channels.virtual,
+									...self.channels.inputs,
+									...self.channels.outputs,
+									...self.channels.mics,
+									...self.channels.groups
+								].map(ch => ({ id: ch, label: ch }))
+						}
+					},
+					default: ''
 				},
 				{
 					type: 'checkbox',
 					label: 'Mute',
 					id: 'mute',
-					default: true,
-				},
+					default: true
+				}
 			],
 			callback: async (event) => {
 				self.sendCommand(`set mute "${event.options.channel}" ${event.options.mute ? '1' : '0'}`)
-			},
+			}
 		},
 
-		// Matrix Routing Controls
 		set_matrix_mute: {
 			name: 'Set Matrix Route Mute',
 			options: [
 				{
-					type: 'textinput',
-					label: 'Input Channel',
-					id: 'input',
-					default: 'Shotgun',
+					type: 'dropdown',
+					label: 'Input Type',
+					id: 'inputType',
+					choices: [
+						{ id: 'all', label: 'All Inputs' },
+						{ id: 'mics', label: 'Microphones' },
+						{ id: 'inputs', label: 'Line Inputs' }
+					],
+					default: 'all'
 				},
 				{
-					type: 'textinput',
+					type: 'dropdown',
+					label: 'Input Channel',
+					id: 'input',
+					choices: (action) => {
+						if (!action || !action.options) return []
+						
+						switch(action.options.inputType) {
+							case 'mics':
+								return self.channels.mics.map(ch => ({ id: ch, label: ch }))
+							case 'inputs':
+								return self.channels.inputs.map(ch => ({ id: ch, label: ch }))
+							default:
+								return [...self.channels.mics, ...self.channels.inputs]
+									.map(ch => ({ id: ch, label: ch }))
+						}
+					},
+					default: ''
+				},
+				{
+					type: 'dropdown',
+					label: 'Output Type',
+					id: 'outputType',
+					choices: [
+						{ id: 'all', label: 'All Outputs' },
+						{ id: 'outputs', label: 'Line Outputs' },
+						{ id: 'groups', label: 'Groups' }
+					],
+					default: 'all'
+				},
+				{
+					type: 'dropdown',
 					label: 'Output Channel',
 					id: 'output',
-					default: 'Discord Out',
+					choices: (action) => {
+						if (!action || !action.options) return []
+						
+						switch(action.options.outputType) {
+							case 'outputs':
+								return self.channels.outputs.map(ch => ({ id: ch, label: ch }))
+							case 'groups':
+								return self.channels.groups.map(ch => ({ id: ch, label: ch }))
+							default:
+								return [...self.channels.outputs, ...self.channels.groups]
+									.map(ch => ({ id: ch, label: ch }))
+						}
+					},
+					default: ''
 				},
 				{
 					type: 'checkbox',
 					label: 'Mute',
 					id: 'mute',
-					default: true,
-				},
+					default: true
+				}
 			],
 			callback: async (event) => {
 				self.sendCommand(`set matrix_mute "${event.options.input}" "${event.options.output}" ${event.options.mute ? '1' : '0'}`)
-			},
-		},
-
-		// Filter Controls
-		set_hpf: {
-			name: 'Set High Pass Filter',
-			options: [
-				{
-					type: 'textinput',
-					label: 'Channel Name',
-					id: 'channel',
-					default: 'Genelecs',
-				},
-				{
-					type: 'checkbox',
-					label: 'Enable',
-					id: 'enable',
-					default: true,
-				},
-			],
-			callback: async (event) => {
-				self.sendCommand(`set hpf_en "${event.options.channel}" ${event.options.enable ? '1' : '0'}`)
-			},
-		},
-		set_lpf: {
-			name: 'Set Low Pass Filter',
-			options: [
-				{
-					type: 'textinput',
-					label: 'Channel Name',
-					id: 'channel',
-					default: 'Sub',
-				},
-				{
-					type: 'checkbox',
-					label: 'Enable',
-					id: 'enable',
-					default: true,
-				},
-			],
-			callback: async (event) => {
-				self.sendCommand(`set lpf_en "${event.options.channel}" ${event.options.enable ? '1' : '0'}`)
-			},
-		},
-
-		// Mic Input Gain Controls
-		set_mic_gain: {
-			name: 'Set Mic Input Gain',
-			options: [
-				{
-					type: 'textinput',
-					label: 'Channel Name',
-					id: 'channel',
-					default: 'Lounge Mic',
-				},
-				{
-					type: 'number',
-					label: 'Gain (dB)',
-					id: 'gain',
-					default: 0,
-					min: -100,
-					max: 20,
-				},
-			],
-			callback: async (event) => {
-				self.sendCommand(`set mic_in_gain "${event.options.channel}" ${event.options.gain}`)
-			},
-		},
+			}
+		}
 	})
 }
