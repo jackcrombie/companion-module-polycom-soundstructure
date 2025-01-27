@@ -88,37 +88,38 @@ class ModuleInstance extends InstanceBase {
 	connectToDevice() {
 		if (this.socket) {
 			this.socket.destroy()
-			this.socket = null
+			delete this.socket
 		}
 
-		if (this.config.host && this.config.port) {
+		if (this.config.host) {
 			this.socket = new TCPHelper(this.config.host, this.config.port)
 
+			this.socket.on('status_change', (status, message) => {
+				this.updateStatus(status, message)
+			})
+
+			this.socket.on('error', (err) => {
+				this.log('error', `Network error: ${err.message}`)
+			})
+
 			this.socket.on('connect', () => {
-				this.updateStatus(InstanceStatus.Ok)
-				this.log('info', `Connected to SoundStructure at ${this.config.host}:${this.config.port}`)
-				this.discoverChannels() // Start discovery on connection
+				this.log('info', 'Connected to device')
+				this.enumerateChannels() // Call enumerateChannels after connection
 			})
 
 			this.socket.on('data', (data) => {
 				this.buffer += data.toString()
-				let newlineIndex
-				while ((newlineIndex = this.buffer.indexOf('\r\n')) !== -1) {
-					const line = this.buffer.substring(0, newlineIndex)
-					this.processDeviceData(line)
-					this.buffer = this.buffer.substring(newlineIndex + 2)
+
+				// Process the buffer for complete messages
+				let lines = this.buffer.split('\n')
+				this.buffer = lines.pop() // Keep the last partial line in the buffer
+
+				for (let line of lines) {
+					this.processData(line.trim())
 				}
 			})
 
-			this.socket.on('error', (err) => {
-				this.updateStatus(InstanceStatus.Error, err.message)
-				this.log('error', `Connection error: ${err.message}`)
-			})
-
-			this.socket.on('close', () => {
-				this.updateStatus(InstanceStatus.Disconnected)
-				this.log('debug', 'Connection closed')
-			})
+			this.socket.connect()
 		}
 	}
 
@@ -323,10 +324,11 @@ class ModuleInstance extends InstanceBase {
 			this.log('error', 'Socket not connected')
 		}
 	}
-}
 
-// Example usage
-const instance = new ModuleInstance()
-instance.enumerateChannels()
+	processData(data) {
+		// Implement data processing logic
+		this.log('debug', `Processing data: ${data}`)
+	}
+}
 
 runEntrypoint(ModuleInstance, UpgradeScripts)
