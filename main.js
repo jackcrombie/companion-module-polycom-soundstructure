@@ -229,9 +229,11 @@ class ModuleInstance extends InstanceBase {
 	}
 
 	parseChannelList(data) {
-		return data.split(',')
-			.map(channel => channel.trim().replace(/^"(.*)"$/, '$1'))
-			.filter(channel => channel.length > 0)
+		// Implement parsing logic based on the response format
+		// Example:
+		const channels = data.split('\n').map(line => line.trim()).filter(line => line)
+		this.log('info', `Enumerated channels: ${channels.join(', ')}`)
+		// Store or use the channels as needed
 	}
 
 	checkDiscoveryComplete() {
@@ -293,6 +295,37 @@ class ModuleInstance extends InstanceBase {
 			this.log('error', 'Socket not connected')
 		}
 	}
+
+	enumerateChannels() {
+		if (this.socket && this.socket.isConnected) {
+			const cmd = 'list_channels' // Replace with the actual command to list channels
+			this.log('debug', `Sending command to enumerate channels: ${cmd}`)
+			this.socket.send(`${cmd}\r\n`)
+			this.log('debug', `Command sent: ${cmd}`)
+
+			// Set a timeout to handle cases where no response is received
+			const timeout = setTimeout(() => {
+				this.log('error', `Command timed out: ${cmd}`)
+			}, 5000) // 5 seconds timeout
+
+			this.socket.on('data', (data) => {
+				clearTimeout(timeout)
+				this.log('debug', `Response received: ${data}`)
+
+				// Parse the response to enumerate channels
+				if (data.includes('error')) {
+					this.log('error', `Error response: ${data}`)
+				} else {
+					this.parseChannelList(data)
+				}
+			})
+		} else {
+			this.log('error', 'Socket not connected')
+		}
+	}
 }
+
+// Example usage
+enumerateChannels()
 
 runEntrypoint(ModuleInstance, UpgradeScripts)
