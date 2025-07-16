@@ -1,354 +1,275 @@
 const { InstanceBase, Regex, runEntrypoint, InstanceStatus, TCPHelper } = require('@companion-module/base')
 const UpgradeScripts = require('./upgrades')
-const UpdateActions = require('./actions')
-const UpdateFeedbacks = require('./feedbacks')
-const UpdateVariableDefinitions = require('./variables')
+const { updateActions } = require('./actions')
+const { updateFeedbacks } = require('./feedbacks')
+const { updateVariableDefinitions } = require('./variables')
+const { sanitize } = require('./utils')
 
 class ModuleInstance extends InstanceBase {
-    constructor(internal) {
-        super(internal)
+	constructor(internal) {
+		super(internal)
+		this.commandQueue = []
+		this.buffer = ''
+		this.commandTimer = null
+		this.discoveryTimer = null
+		this.resetState()
+	}
 
-        // Basic properties
-        this.socket = null
-        this.buffer = ''
+	resetState() {
+		this.state = {
+			virtualChannels: {},
+			groups: {},
+			matrix: {},
+		}
+		this.discoveryComplete = false
+	}
 
-        // State tracking
-        this.virtualChannels = []
-        this.presets = []
-        this.channelMuteStatus = {}
-        this.crosspointMuteStatus = {}
-        this.filterStatus = {}
+	async init(config) {
+		this.log('info', 'Initializing module...')
+		this.config = config
+		this.initActions()
+		this.initFeedbacks()
+		this.initVariables()
+		this.initConnection()
+		this.startCommandQueue()
+	}
 
-        // Discovery related properties
-        this.channels = {
-            virtual: [],
-            inputs: [], 
-            outputs: [],
-            mics: [],
-            groups: []
-        }
-        this.channelTypes = {} // Maps channel names to their types
-        this.discoveryInProgress = false
-        this.discoveryTimeout = null
-        this.enumeratedChannels = [] // Accumulate channels here
-    }
+	async destroy() {
+		this.log('info', 'Destroying module...')
+		this.stopCommandQueue()
+		if (this.discoveryTimer) clearTimeout(this.discoveryTimer)
+		if (this.socket) this.socket.destroy()
+		this.updateStatus(InstanceStatus.Disconnected)
+	}
 
-    async init(config) {
-        this.config = config
-        this.updateStatus(InstanceStatus.Ok)
-        this.connectToDevice()
-        this.updateActions()
-        this.updateFeedbacks()
-        this.updateVariableDefinitions()
-    }
+	async configUpdated(config) {
+		this.log('info', 'Configuration updated. Re-initializing...')
+		this.config = config
+		this.initConnection()
+	}
 
-    async destroy() {
-        if (this.socket) {
-            this.socket.destroy()
-            this.socket = null
-        }
-    }
+	getConfigFields() {
+		return [
+			{
+				type: 'static-text',
+				id: 'info',
+				width: 12,
+				label: 'Information',
+				value: 'This module controls Polycom SoundStructure devices.',
+			},
+			{
+				type: 'textinput',
+				id: 'host',
+				label: 'Target IP',
+				width: 8,
+				regex: Regex.IP,
+				required: true,
+			},
+			{
+				type: 'textinput',
+				id: 'port',
+				label: 'Target Port',
+				width: 4,
+				default: 52774,
+				regex: Regex.PORT,
+				required: true,
+			},
+		]
+	}
 
-    async configUpdated(config) {
-        this.config = config
-        this.connectToDevice()
-    }
+	initConnection() {
+		this.log('info', `Attempting to connect to ${this.config.host}:${this.config.port}`)
+		if (this.socket) this.socket.destroy()
+		this.updateStatus(InstanceStatus.Connecting)
 
-    getConfigFields() {
-        return [
-            {
-                type: 'textinput',
-                id: 'host',
-                label: 'SoundStructure IP',
-                width: 8,
-                regex: Regex.IP,
-            },
-            {
-                type: 'textinput',
-                id: 'port',
-                label: 'Port',
-                width: 4,
-                default: '52774',
-                regex: Regex.PORT,
-            },
-        ]
-    }
+		if (this.config.host && this.config.port) {
+			this.socket = new TCPHelper(this.config.host, this.config.port)
+			this.socket.on('status_change', (status, message) => {
+				this.log('info', `Connection status changed: ${status} - ${message}`)
+				this.updateStatus(status, message)
+			})
+			this.socket.on('error', (err) => {
+				this.log('error', `Network error: ${err.message}`)
+				this.updateStatus(InstanceStatus.ConnectionFailure, err.message)
+			})
+			this.socket.on('connect', () => {
+				this.log('info', 'Successfully connected to device.')
+				this.updateStatus(InstanceStatus.Ok)
+				this.buffer = ''
+				this.startDiscovery()
+			})
+			this.socket.on('data', (data) => {
+				this.buffer += data.toString('utf8')
+				this.processBuffer()
+			})
+		} else {
+			this.updateStatus(InstanceStatus.BadConfig)
+		}
+	}
 
-    updateActions() {
-        UpdateActions(this)
-    }
+	processBuffer() {
+		let EOL
+		while ((EOL = this.buffer.indexOf('\r')) !== -1) {
+			const line = this.buffer.substring(0, EOL).trim()
+			this.buffer = this.buffer.substring(EOL + 1)
+			if (line) this.processLine(line)
+		}
+	}
 
-    updateFeedbacks() {
-        UpdateFeedbacks(this)
-    }
+	processLine(line) {
+		this.log('debug', `RECV: ${line}`)
 
-    updateVariableDefinitions() {
-        UpdateVariableDefinitions(this)
-    }
+		if (!this.discoveryComplete) {
+			if (line.startsWith('vcitem')) {
+				const match = /vcitem "([^"]+)" (\w+) (\w+)/.exec(line)
+				if (match) {
+					const [, label, vctype, pctype] = match
+					this.log('debug', `Discovered Channel: ${label}`)
+					if (!this.state.virtualChannels[label]) {
+						this.state.virtualChannels[label] = { label, vctype, pctype, mute: 0, gain: 0 }
+					}
+				}
+			} else if (line.startsWith('vcgitem')) {
+				const parts = line.match(/"[^"]+"|\S+/g) || []
+				if (parts.length > 1) {
+					const groupName = parts[1].replace(/"/g, '')
+					const members = parts.slice(2).map((m) => m.replace(/"/g, ''))
+					this.state.groups[groupName] = members
+					this.log('debug', `Discovered Group: ${groupName}`)
+				}
+			}
+		}
 
-    connectToDevice() {
-        if (this.socket) {
-            this.socket.destroy()
-            delete this.socket
-        }
+		if (line.startsWith('val mute')) {
+			const match = /val mute "([^"]+)" = (\d)/.exec(line)
+			if (match) {
+				const channel = this.state.virtualChannels[match[1]]
+				if (channel) {
+					channel.mute = parseInt(match[2])
+					this.setVariableValues({ [`mute_${sanitize(channel.label)}`]: channel.mute })
+					this.checkFeedbacks()
+				}
+			}
+		} else if (line.startsWith('val fader')) {
+			const match = /val fader "([^"]+)" = ([\d.-]+)/.exec(line)
+			if (match) {
+				const channel = this.state.virtualChannels[match[1]]
+				if (channel) {
+					channel.gain = parseFloat(match[2])
+					this.setVariableValues({ [`gain_${sanitize(channel.label)}`]: channel.gain })
+					this.checkFeedbacks()
+				}
+			}
+		} else if (line.startsWith('val matrix_mute')) {
+			const match = /val matrix_mute "([^"]+)" "([^"]+)" = (\d)/.exec(line)
+			if (match) {
+				const [, input, output, mute] = match
+				if (!this.state.matrix[input]) this.state.matrix[input] = {}
+				this.state.matrix[input][output] = { mute: parseInt(mute) }
+				this.setVariableValues({ [`matrix_mute_${sanitize(input)}_${sanitize(output)}`]: parseInt(mute) })
+				this.checkFeedbacks()
+			}
+		} else if (line.startsWith('val matrix_gain')) {
+			const match = /val matrix_gain "([^"]+)" "([^"]+)" = ([\d.-]+)/.exec(line)
+			if (match) {
+				const [, input, output, gain] = match
+				if (!this.state.matrix[input]) this.state.matrix[input] = {}
+				if (!this.state.matrix[input][output]) this.state.matrix[input][output] = {}
+				this.state.matrix[input][output].gain = parseFloat(gain)
+				this.setVariableValues({ [`matrix_gain_${sanitize(input)}_${sanitize(output)}`]: parseFloat(gain) })
+			}
+		} else if (line.toUpperCase().startsWith('ERROR')) {
+			this.log('error', `Received error from device: ${line}`)
+		}
+	}
 
-        if (this.config.host) {
-            this.socket = new TCPHelper(this.config.host, this.config.port)
+	sendCommand(command) {
+		if (command) this.commandQueue.push(command)
+	}
 
-            this.socket.on('status_change', (status, message) => {
-                this.updateStatus(status, message)
-            })
+	startCommandQueue() {
+		if (this.commandTimer === null) {
+			this.commandTimer = setInterval(() => {
+				if (this.commandQueue.length > 0) {
+					const command = this.commandQueue.shift()
+					if (this.socket && this.socket.isConnected) {
+						this.log('debug', `SEND: ${command}`)
+						this.socket.send(`${command}\r\n`)
+					} else {
+						this.log('warn', `Socket not connected, command '${command}' not sent.`)
+					}
+				}
+			}, 50)
+		}
+	}
 
-            this.socket.on('error', (err) => {
-                this.log('error', `Network error: ${err.message}`)
-            })
+	stopCommandQueue() {
+		if (this.commandTimer) {
+			clearInterval(this.commandTimer)
+			this.commandTimer = null
+		}
+	}
 
-            this.socket.on('connect', () => {
-                this.log('info', 'Connected to device')
-                this.enumerateChannels() // Call enumerateChannels after connection
-            })
+	startDiscovery() {
+		this.log('info', 'Starting device discovery...')
+		this.resetState()
+		this.discoveryComplete = false
+		this.sendCommand('vclist')
+		this.sendCommand('vcglist')
+		if (this.discoveryTimer) clearTimeout(this.discoveryTimer)
+		this.discoveryTimer = setTimeout(() => this.finalizeDiscovery(), 3000)
+	}
 
-            this.socket.on('data', (data) => {
-                this.buffer += data.toString()
+	finalizeDiscovery() {
+		if (this.discoveryComplete) return
+		this.discoveryComplete = true
+		this.log('info', 'Discovery timer elapsed. Now fetching initial states.')
+		const channels = Object.values(this.state.virtualChannels)
 
-                // Process the buffer for complete messages
-                let lines = this.buffer.split('\n')
-                this.buffer = lines.pop() // Keep the last partial line in the buffer
+		if (channels.length === 0) {
+			this.log('warn', 'No channels discovered. Dropdowns will be empty.')
+		} else {
+			this.log('info', `Discovered ${channels.length} channels and ${Object.keys(this.state.groups).length} groups.`)
+			channels.forEach((channel) => {
+				if (channel.pctype !== 'control' && !channel.pctype.startsWith('clink')) {
+					this.sendCommand(`get mute "${channel.label}"`)
+					if (channel.pctype !== 'pstn_in' && channel.pctype !== 'pstn_out' && channel.pctype !== 'sig_gen') {
+						this.sendCommand(`get fader "${channel.label}"`)
+					}
+				}
+			})
 
-                for (let line of lines) {
-                    this.processData(line.trim())
-                }
-            })
+			const matrixInputs = channels.filter((c) => c.pctype.includes('_in') || c.pctype === 'sig_gen' || c.pctype === 'submix')
+			const matrixOutputs = channels.filter((c) => c.pctype.includes('_out') || c.pctype === 'submix')
 
-            this.socket.connect()
-        }
-    }
+			for (const inputChannel of matrixInputs) {
+				for (const outputChannel of matrixOutputs) {
+					if (inputChannel.label === outputChannel.label && inputChannel.pctype === 'submix') {
+						continue
+					}
+					this.sendCommand(`get matrix_mute "${inputChannel.label}" "${outputChannel.label}"`)
+					this.sendCommand(`get matrix_gain "${inputChannel.label}" "${outputChannel.label}"`)
+				}
+			}
+		}
 
-    async discoverChannels() {
-        if (this.discoveryInProgress) {
-            this.log('debug', 'Discovery already in progress')
-            return
-        }
+		this.log('info', 'Updating definitions.')
+		this.initActions()
+		this.initFeedbacks()
+		this.initVariables()
+	}
 
-        this.discoveryInProgress = true
-        this.log('debug', '=== Starting Channel Discovery ===')
+	initActions() {
+		this.setActionDefinitions(updateActions(this))
+	}
 
-        this.channels = {
-            virtual: [],
-            inputs: [], 
-            outputs: [],
-            mics: [],
-            groups: []
-        }
-        this.channelTypes = {}
+	initFeedbacks() {
+		this.setFeedbackDefinitions(updateFeedbacks(this))
+	}
 
-        // Set a timeout for discovery
-        this.discoveryTimeout = setTimeout(() => {
-            if (this.discoveryInProgress) {
-                this.discoveryInProgress = false
-                this.log('warn', 'Channel discovery timed out. Current state:', JSON.stringify(this.channels))
-                this.log('debug', '=== Discovery Timed Out ===')
-                this.finalizeDiscovery()
-            }
-        }, 30000) // 30 second timeout
-
-        // Query commands with delays
-        setTimeout(() => {
-            this.log('debug', 'Querying system info')
-            this.sendCommand('get channels')
-        }, 1000)
-
-        setTimeout(() => {
-            this.log('debug', 'Querying virtual channels')
-            this.sendCommand('get virtual_channels')
-        }, 2000)
-    }
-
-    processDeviceData(data) {
-        this.log('debug', `Raw data received: ${data}`)
-
-        // Handle discovery responses
-        if (this.discoveryInProgress) {
-            this.log('debug', `Processing discovery data: ${data}`)
-
-            // Check for virtual channels response
-            if (data.substring(0,18) === 'val virtual_channels') {
-                const match = /val virtual_channels "(.+)"/.exec(data)
-                if (match) {
-                    this.channels.virtual = match[1].split(',').map(c => c.trim())
-                    this.log('debug', 'Found virtual channels:', this.channels.virtual)
-                }
-            }
-            
-            // Check for channels response
-            if (data.substring(0,11) === 'val channels') {
-                const match = /val channels "(.+)"/.exec(data)
-                if (match) {
-                    const channels = match[1].split(',').map(c => c.trim())
-                    this.log('debug', 'Found channels:', channels)
-                    
-                    // Sort channels into types
-                    channels.forEach(channel => {
-                        if (channel.toLowerCase().indexOf('mic') !== -1) {
-                            this.channels.mics.push(channel)
-                        } else {
-                            this.channels.inputs.push(channel)
-                        }
-                    })
-                }
-            }
-
-            // Check if discovery is complete
-            if (this.checkDiscoveryComplete()) {
-                this.finalizeDiscovery()
-                this.log('debug', '=== Discovery Complete ===')
-                this.log('debug', 'Final channel state:', JSON.stringify(this.channels, null, 2))
-            }
-        }
-
-        // Process all val responses
-        if (data.substring(0,4) === 'val ') {
-            const match = /val "(.*)" = (.*)/.exec(data)
-            if (match) {
-                const param = match[1]
-                const value = match[2]
-
-                // Check parameter type
-                if (param.indexOf('_mute') !== -1) {
-                    this.channelMuteStatus[param] = parseInt(value, 10)
-                    this.checkFeedbacks('channelMuteStatus')
-                } else if (param.indexOf('matrix_mute') !== -1) {
-                    const [input, output] = param.split(' to ')
-                    const key = `${input}:${output}`
-                    this.crosspointMuteStatus[key] = parseInt(value, 10)
-                    this.checkFeedbacks('crosspointMuteStatus')
-                } else if (param.indexOf('_en') !== -1) {
-                    this.filterStatus[param] = parseInt(value, 10)
-                    this.checkFeedbacks('filterStatus')
-                }
-            }
-        }
-    }
-
-    parseChannelList(data) {
-        // Convert data to string if it's not already
-        const dataStr = data.toString()
-        const channels = dataStr.split('\n').map(line => line.trim()).filter(line => line.startsWith('vcitem'))
-
-        // Parse each vcitem line
-        channels.forEach(channel => {
-            const match = /vcitem "([^"]+)" (\w+) (\w+) ([\d\s]+)/.exec(channel)
-            if (match) {
-                const label = match[1]
-                const vctype = match[2]
-                const pctype = match[3]
-                const nums = match[4].split(' ').map(num => parseInt(num, 10))
-
-                this.enumeratedChannels.push({ label, vctype, pctype, nums })
-            }
-        })
-
-        this.log('info', `Enumerated channels: ${JSON.stringify(this.enumeratedChannels, null, 2)}`)
-
-        // Update the channels object
-        this.channels.virtual = this.enumeratedChannels.map(ch => ch.label)
-
-        // Refresh actions to include the new channels
-        this.updateActions()
-    }
-
-    checkDiscoveryComplete() {
-        return (
-            this.channels.virtual.length > 0 ||
-            this.channels.inputs.length > 0 ||
-            this.channels.outputs.length > 0 ||
-            this.channels.mics.length > 0 ||
-            this.channels.groups.length > 0
-        )
-    }
-
-    finalizeDiscovery() {
-        if (this.discoveryTimeout) {
-            clearTimeout(this.discoveryTimeout)
-            this.discoveryTimeout = null
-        }
-
-        this.discoveryInProgress = false
-        this.log('info', 'Channel discovery completed')
-        this.log('debug', 'Discovered channels:', JSON.stringify(this.channels, null, 2))
-
-        // Update the available choices in your actions
-        this.updateActions()
-
-        // Emit variables with the channel counts
-        this.setVariableValues({
-            'virtual_channel_count': this.channels.virtual.length,
-            'input_channel_count': this.channels.inputs.length,
-            'output_channel_count': this.channels.outputs.length,
-            'mic_channel_count': this.channels.mics.length,
-            'group_count': this.channels.groups.length
-        })
-    }
-
-    sendCommand(cmd) {
-        if (this.socket && this.socket.isConnected) {
-            this.log('debug', `Sending command: ${cmd}`)
-            this.socket.send(`${cmd}\r\n`)
-            this.log('debug', `Command sent: ${cmd}`)
-
-            // Set a timeout to handle cases where no response is received
-            const timeout = setTimeout(() => {
-                this.log('error', `Command timed out: ${cmd}`)
-            }, 5000) // 5 seconds timeout
-
-            this.socket.on('data', (data) => {
-                clearTimeout(timeout)
-                this.log('debug', `Response received: ${data}`)
-
-                // Check for specific error messages
-                if (data.includes('error')) {
-                    this.log('error', `Error response: ${data}`)
-                } else {
-                    // Handle the response data here
-                }
-            })
-        } else {
-            this.log('error', 'Socket not connected')
-        }
-    }
-
-    enumerateChannels() {
-        if (this.socket && this.socket.isConnected) {
-            const cmd = 'vclist'
-            this.log('debug', `Sending command to enumerate channels: ${cmd}`)
-            this.socket.send(`${cmd}\r\n`)
-            this.log('debug', `Command sent: ${cmd}`)
-
-            // Set a timeout to handle cases where no response is received
-            const timeout = setTimeout(() => {
-                this.log('error', `Command timed out: ${cmd}`)
-            }, 5000) // 5 seconds timeout
-
-            this.socket.on('data', (data) => {
-                clearTimeout(timeout)
-                this.log('debug', `Response received: ${data}`)
-
-                // Parse the response to enumerate channels
-                if (data.includes('error')) {
-                    this.log('error', `Error response: ${data}`)
-                } else {
-                    this.parseChannelList(data)
-                }
-            })
-        } else {
-            this.log('error', 'Socket not connected')
-        }
-    }
-
-    processData(data) {
-        // Implement data processing logic
-        this.log('debug', `Processing data: ${data}`)
-    }
+	initVariables() {
+		this.setVariableDefinitions(updateVariableDefinitions(this))
+	}
 }
 
 runEntrypoint(ModuleInstance, UpgradeScripts)
