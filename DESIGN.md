@@ -4,7 +4,7 @@ This document outlines the design for a comprehensive Bitfocus Companion module 
 
 ## 1. Key Features
 
--   **Auto-Discovery:** Automatically discover the device's IP address and full configuration (all virtual channels, presets, etc.) upon connection.
+-   **Auto-Discovery:** Automatically discover the device's full configuration (all virtual channels, presets, etc.) upon connection.
 -   **Real-time, Low-Latency Feedback:** Utilizes the device's event-driven reporting for instant feedback on mutes, gains, and other parameters without polling.
 -   **Dynamic Controls:** Actions and feedbacks are dynamically generated based on the discovered device configuration, so channel names and presets are always up-to-date.
 -   **Comprehensive Control:** Full control over channel and matrix parameters, audio processing blocks (EQ, Dynamics), preset recall, and telephony functions.
@@ -13,7 +13,7 @@ This document outlines the design for a comprehensive Bitfocus Companion module 
 
 ### 2.1. Connection & Communication
 
--   **Auto-Discovery (Future):** The module will eventually support mDNS/Bonjour for automatic discovery of SoundStructure devices on the network. Initially, the user will provide an IP address.
+-   **Auto-Discovery (Future):** The module will eventually support mDNS/Bonjour for automatic discovery of SoundStructure devices on the network if this is possible. Initially, the user will provide an IP address.
 -   **TCP Client:** The module will use `TCPHelper` to manage the connection to the SoundStructure device on port **52774**.
 -   **Reconnection Logic:** Implement robust reconnection logic with exponential backoff.
 -   **Status Indication:** Clearly indicate connection status changes (Connecting, OK, Error, Disconnected).
